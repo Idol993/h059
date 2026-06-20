@@ -66,9 +66,11 @@ async def lifespan(app: FastAPI):
         raise
 
     try:
+        from services import set_engine
         recommender = RecommendationEngine(db, redis)
         app.state.recommender = recommender
-        logger.info("Recommendation engine created")
+        set_engine(recommender)
+        logger.info("Recommendation engine created and registered globally")
 
         await recommender.content_based.build_index()
         logger.info(
@@ -76,13 +78,15 @@ async def lifespan(app: FastAPI):
             f"items: {len(recommender.content_based.item_ids)}"
         )
 
-        await recommender.collaborative.train(incremental=False)
+        train_success = await recommender.collaborative.train(incremental=False)
         logger.info(
-            f"Collaborative model trained: {recommender.collaborative.is_trained()}, "
+            f"Collaborative model trained: {train_success}, "
             f"stats: {recommender.collaborative.get_model_stats()}"
         )
 
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         logger.warning(f"Model initialization warning: {e}")
 
     logger.info("Recommendation API service started successfully")

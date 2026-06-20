@@ -2,7 +2,7 @@ import time
 import asyncio
 from typing import List, Dict, Any, Tuple, Optional
 from surprise import SVD, Dataset, Reader
-from surprise.model_selection import train_test_split
+import pandas as pd
 import numpy as np
 from models.database import Database
 from core.config import settings
@@ -42,29 +42,34 @@ class CollaborativeRecommender:
                 )
 
                 if not behaviors:
+                    print("No training data available")
                     return False
 
+                print(f"Training with {len(behaviors)} behavior records...")
+
                 reader = Reader(rating_scale=(1, 6))
-                data = Dataset.load_from_df(
-                    [
-                        (str(user_id), str(item_id), rating)
-                        for user_id, item_id, rating in behaviors
-                    ],
-                    reader,
+
+                df = pd.DataFrame(
+                    behaviors,
+                    columns=["userID", "itemID", "rating"],
                 )
+                df["userID"] = df["userID"].astype(str)
+                df["itemID"] = df["itemID"].astype(str)
+
+                data = Dataset.load_from_df(df[["userID", "itemID", "rating"]], reader)
 
                 full_trainset = data.build_full_trainset()
 
                 self._user_id_to_inner = {}
                 self._inner_to_user_id = {}
-                for inner_id, raw_id in full_trainset.ur.items():
+                for inner_id in full_trainset.ur.keys():
                     raw_user_id = int(full_trainset.to_raw_uid(inner_id))
                     self._user_id_to_inner[raw_user_id] = inner_id
                     self._inner_to_user_id[inner_id] = raw_user_id
 
                 self._item_id_to_inner = {}
                 self._inner_to_item_id = {}
-                for inner_id, raw_id in full_trainset.ir.items():
+                for inner_id in full_trainset.ir.keys():
                     raw_item_id = int(full_trainset.to_raw_iid(inner_id))
                     self._item_id_to_inner[raw_item_id] = inner_id
                     self._inner_to_item_id[inner_id] = raw_item_id
@@ -81,19 +86,27 @@ class CollaborativeRecommender:
                 self._is_trained = True
                 self._last_train_time = int(time.time())
 
-                await self.redis.set(
-                    get_last_train_time_key(),
-                    str(self._last_train_time),
-                )
-                await self.redis.set(get_train_counter_key(), "0")
+                try:
+                    await self.redis.set(
+                        get_last_train_time_key(),
+                        str(self._last_train_time),
+                    )
+                    await self.redis.set(get_train_counter_key(), "0")
+                except Exception as redis_err:
+                    print(f"Warning: Failed to update Redis train metadata: {redis_err}")
 
                 train_duration = time.time() - train_start
-                print(f"Model training completed in {train_duration:.2f}s, "
-                      f"behaviors: {len(behaviors)}, incremental: {incremental}")
+                print(
+                    f"Model training completed in {train_duration:.2f}s, "
+                    f"behaviors: {len(behaviors)}, users: {len(self._user_id_to_inner)}, "
+                    f"items: {len(self._item_id_to_inner)}, incremental: {incremental}"
+                )
 
                 return True
 
             except Exception as e:
+                import traceback
+                traceback.print_exc()
                 print(f"Model training failed: {e}")
                 self._is_trained = False
                 return False

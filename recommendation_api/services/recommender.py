@@ -31,9 +31,13 @@ class RecommendationEngine:
 
     async def get_user_profile(self, user_id: int) -> Dict[str, Any]:
         cache_key = get_user_profile_key(user_id)
-        cached = await self.redis.get_json(cache_key)
-        if cached:
-            return cached
+
+        try:
+            cached = await self.redis.get_json(cache_key)
+            if cached:
+                return cached
+        except Exception as redis_err:
+            print(f"Warning: Failed to get user profile cache: {redis_err}")
 
         behaviors = await self.db.get_user_behaviors(user_id, limit=1000)
 
@@ -92,26 +96,36 @@ class RecommendationEngine:
             "last_active": last_active,
         }
 
-        await self.redis.set_json(cache_key, profile, settings.user_profile_cache_ttl)
+        try:
+            await self.redis.set_json(cache_key, profile, settings.user_profile_cache_ttl)
+        except Exception as redis_err:
+            print(f"Warning: Failed to set user profile cache: {redis_err}")
+
         return profile
 
     async def invalidate_user_profile(self, user_id: int) -> None:
-        cache_key = get_user_profile_key(user_id)
-        await self.redis.delete(cache_key)
+        try:
+            cache_key = get_user_profile_key(user_id)
+            await self.redis.delete(cache_key)
+        except Exception as e:
+            print(f"Warning: Failed to invalidate user profile cache: {e}")
 
     async def get_ab_weights(self, ab_group: str) -> Dict[str, float]:
-        config_key = get_ab_config_key(ab_group)
-        ab_config = await self.redis.hgetall(config_key)
+        try:
+            config_key = get_ab_config_key(ab_group)
+            ab_config = await self.redis.hgetall(config_key)
 
-        if ab_config:
-            try:
-                return {
-                    "hotness": float(ab_config.get("hotness", settings.hotness_weight)),
-                    "collaborative": float(ab_config.get("collaborative", settings.collaborative_weight)),
-                    "content": float(ab_config.get("content", settings.content_weight)),
-                }
-            except (ValueError, TypeError):
-                pass
+            if ab_config:
+                try:
+                    return {
+                        "hotness": float(ab_config.get("hotness", settings.hotness_weight)),
+                        "collaborative": float(ab_config.get("collaborative", settings.collaborative_weight)),
+                        "content": float(ab_config.get("content", settings.content_weight)),
+                    }
+                except (ValueError, TypeError):
+                    pass
+        except Exception as e:
+            print(f"Warning: Failed to get AB config from Redis: {e}")
 
         return get_strategy_weights(ab_group)
 
@@ -123,10 +137,14 @@ class RecommendationEngine:
         ab_group: str = "default",
     ) -> Tuple[List[RecommendedItem], str]:
         cache_key = get_recommend_cache_key(user_id, strategy, ab_group)
-        cached = await self.redis.get_json(cache_key)
-        if cached:
-            items = [RecommendedItem(**item) for item in cached]
-            return items, ab_group
+
+        try:
+            cached = await self.redis.get_json(cache_key)
+            if cached:
+                items = [RecommendedItem(**item) for item in cached]
+                return items, ab_group
+        except Exception as redis_err:
+            print(f"Warning: Failed to get recommendation cache: {redis_err}")
 
         behavior_count = await self.db.get_user_behavior_count(user_id)
 
@@ -181,8 +199,11 @@ class RecommendationEngine:
             )
 
         if result:
-            cache_data = [item.model_dump() for item in result]
-            await self.redis.set_json(cache_key, cache_data, settings.recommendation_cache_ttl)
+            try:
+                cache_data = [item.model_dump() for item in result]
+                await self.redis.set_json(cache_key, cache_data, settings.recommendation_cache_ttl)
+            except Exception as redis_err:
+                print(f"Warning: Failed to set recommendation cache: {redis_err}")
 
         return result, ab_group
 

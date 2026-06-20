@@ -242,22 +242,26 @@ async def init_sample_data():
         print(f"Redis清空警告: {e}")
 
     print("初始化A/B测试配置...")
-    await redis.hset(
-        get_ab_config_key("A"),
-        mapping={
-            "hotness": "0.2",
-            "collaborative": "0.5",
-            "content": "0.3",
-        },
-    )
-    await redis.hset(
-        get_ab_config_key("B"),
-        mapping={
-            "hotness": "0.4",
-            "collaborative": "0.3",
-            "content": "0.3",
-        },
-    )
+    try:
+        await redis.hset(
+            get_ab_config_key("A"),
+            mapping={
+                "hotness": "0.2",
+                "collaborative": "0.5",
+                "content": "0.3",
+            },
+        )
+        await redis.hset(
+            get_ab_config_key("B"),
+            mapping={
+                "hotness": "0.4",
+                "collaborative": "0.3",
+                "content": "0.3",
+            },
+        )
+        print("  ✓ A/B测试配置已初始化")
+    except Exception as e:
+        print(f"  ⚠ A/B测试配置初始化失败（Redis不可用）: {e}")
 
     print("创建示例物品...")
     current_time = int(time.time())

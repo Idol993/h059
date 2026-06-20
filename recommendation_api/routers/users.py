@@ -6,17 +6,22 @@ from models.schemas import (
     UserProfile,
 )
 from services.recommender import RecommendationEngine
-from core.redis_client import get_redis_client, RedisClient
-from models.database import get_database, Database
+from services import get_engine
 
 router = APIRouter(prefix="", tags=["users"])
 
 
-async def get_recommender(
-    db: Database = Depends(get_database),
-    redis: RedisClient = Depends(get_redis_client),
-) -> RecommendationEngine:
-    return RecommendationEngine(db, redis)
+async def get_recommender() -> RecommendationEngine:
+    engine = get_engine()
+    if engine is None:
+        from services import set_engine
+        from core.redis_client import get_redis_client, RedisClient
+        from models.database import get_database, Database
+        redis: RedisClient = await get_redis_client()
+        db: Database = await get_database()
+        engine = RecommendationEngine(db, redis)
+        set_engine(engine)
+    return engine
 
 
 @router.post(

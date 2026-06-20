@@ -1,6 +1,8 @@
 from fastapi import APIRouter, HTTPException, Depends, Query
 from typing import Optional
 import json
+import time
+import aiosqlite
 from models.schemas import (
     ItemCreate,
     ItemUpdate,
@@ -9,17 +11,33 @@ from models.schemas import (
     ErrorResponse,
 )
 from services.recommender import RecommendationEngine
-from core.redis_client import get_redis_client, RedisClient
-from models.database import get_database, Database
+from services import get_engine
+from core.config import settings
 
 router = APIRouter(prefix="/items", tags=["items"])
 
 
-async def get_recommender(
-    db: Database = Depends(get_database),
-    redis: RedisClient = Depends(get_redis_client),
-) -> RecommendationEngine:
-    return RecommendationEngine(db, redis)
+async def get_recommender() -> RecommendationEngine:
+    engine = get_engine()
+    if engine is None:
+        from services import set_engine
+        from core.redis_client import get_redis_client, RedisClient
+        from models.database import get_database, Database
+        redis: RedisClient = await get_redis_client()
+        db: Database = await get_database()
+        engine = RecommendationEngine(db, redis)
+        set_engine(engine)
+    return engine
+
+
+async def clear_recommendation_cache(redis_client) -> None:
+    try:
+        if redis_client and redis_client._client:
+            keys = await redis_client._client.keys("rec:*")
+            if keys:
+                await redis_client._client.delete(*keys)
+    except Exception as e:
+        print(f"Warning: Failed to clear recommendation cache: {e}")
 
 
 @router.post(
@@ -48,17 +66,20 @@ async def create_item(
         if not created_item:
             raise HTTPException(status_code=500, detail="创建物品失败")
 
-        await recommender.content_based.build_index()
+        try:
+            await recommender.content_based.build_index()
+        except Exception as idx_err:
+            print(f"Warning: Build index failed after create item: {idx_err}")
 
-        cache_keys = await recommender.redis._client.keys("rec:*")
-        for key in cache_keys:
-            await recommender.redis.delete(key)
+        await clear_recommendation_cache(recommender.redis)
 
         return ItemResponse(**created_item)
 
     except HTTPException:
         raise
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         print(f"Create item error: {e}")
         raise HTTPException(
             status_code=500,
@@ -181,22 +202,23 @@ async def update_item(
             update_values.append(json.dumps(item_update.features, ensure_ascii=False))
 
         if update_fields:
-            import time
             update_fields.append("updated_at = ?")
             update_values.append(int(time.time()))
             update_values.append(item_id)
 
-            async with recommender.db._conn_pool() if hasattr(recommender.db, '_conn_pool') else None:
-                import aiosqlite
-                from core.config import settings
-                async with aiosqlite.connect(settings.items_db_path) as db:
-                    await db.execute(
-                        f"UPDATE items SET {', '.join(update_fields)} WHERE id = ?",
-                        update_values,
-                    )
-                    await db.commit()
+            async with aiosqlite.connect(settings.items_db_path) as db:
+                await db.execute(
+                    f"UPDATE items SET {', '.join(update_fields)} WHERE id = ?",
+                    tuple(update_values),
+                )
+                await db.commit()
 
-        await recommender.content_based.build_index()
+        try:
+            await recommender.content_based.build_index()
+        except Exception as idx_err:
+            print(f"Warning: Build index failed after update item: {idx_err}")
+
+        await clear_recommendation_cache(recommender.redis)
 
         updated_item = await recommender.db.get_item(item_id)
         return ItemResponse(**updated_item)
@@ -204,6 +226,8 @@ async def update_item(
     except HTTPException:
         raise
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         print(f"Update item error: {e}")
         raise HTTPException(
             status_code=500,
@@ -230,19 +254,24 @@ async def delete_item(
                 detail=f"物品 {item_id} 不存在",
             )
 
-        import aiosqlite
-        from core.config import settings
         async with aiosqlite.connect(settings.items_db_path) as db:
             await db.execute("DELETE FROM items WHERE id = ?", (item_id,))
             await db.commit()
 
-        await recommender.content_based.build_index()
+        try:
+            await recommender.content_based.build_index()
+        except Exception as idx_err:
+            print(f"Warning: Build index failed after delete item: {idx_err}")
+
+        await clear_recommendation_cache(recommender.redis)
 
         return {"status": "ok", "message": f"物品 {item_id} 已删除"}
 
     except HTTPException:
         raise
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         print(f"Delete item error: {e}")
         raise HTTPException(
             status_code=500,
